@@ -24,12 +24,14 @@ import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.net.ssl.HostnameVerifier;
 import okhttp3.Cache;
 import okhttp3.Call;
 import okhttp3.Cookie;
 import okhttp3.Credentials;
 import okhttp3.Headers;
+import okhttp3.Interceptor;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Protocol;
@@ -90,6 +92,37 @@ public final class HttpOverHttp2Test {
 
   @After public void tearDown() throws Exception {
     Authenticator.setDefault(null);
+  }
+
+  // This bug specifically only happens over HTTP/2 (it doesn't seem to happen over other protocols)
+  @Test
+  public void infiniteLoopFromIoException() throws Exception {
+    final AtomicInteger requestCount = new AtomicInteger(0);
+
+    // Always throw an IOException (and log when we make requests so we can see it repeatedly attempt to make one)
+    client = client.newBuilder()
+        .addNetworkInterceptor(new Interceptor() {
+          @Override
+          public Response intercept(Chain chain) throws IOException {
+            System.out.println(String.format("Making HTTP request #%s...", requestCount.incrementAndGet()));
+            return chain.proceed(chain.request());
+          }
+        })
+        .addNetworkInterceptor(new Interceptor() {
+          @Override
+          public Response intercept(Chain chain) throws IOException {
+            throw new IOException("Mock Stream Closed");
+          }
+        })
+        .build();
+
+    Request request = new Request.Builder()
+        .url(server.url("/"))
+        .build();
+
+    client.newCall(request).execute();
+
+    // Infinite loop occurs from above and we never get here
   }
 
   @Test public void get() throws Exception {
